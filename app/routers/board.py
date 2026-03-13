@@ -25,10 +25,10 @@ router = APIRouter(prefix="/api/board", tags=["board"])
 class TaskCreateRequest(BaseModel):
     title: str
     description: str = ""
-    assignee: str = None
+    assignee: Optional[str] = None
     priority: str = "medium"
     feature_area: str = ""
-    meeting_id: int = None
+    meeting_id: Optional[int] = None
 
 
 class TaskMoveRequest(BaseModel):
@@ -36,11 +36,11 @@ class TaskMoveRequest(BaseModel):
 
 
 class TaskUpdateRequest(BaseModel):
-    title: str = None
-    description: str = None
-    assignee: str = None
-    priority: str = None
-    feature_area: str = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    assignee: Optional[str] = None
+    priority: Optional[str] = None
+    feature_area: Optional[str] = None
 
 
 @router.get("/tasks")

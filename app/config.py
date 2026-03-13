@@ -15,8 +15,11 @@ class Settings:
     # Sarvam AI
     SARVAM_API_KEY: str = os.getenv("SARVAM_API_KEY", "")
 
-    # Google Gemini / ADK
-    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+    # OpenRouter API
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+
+    # Google Gemini / ADK (Deprecated/Commented)
+    # GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
 
     # Delta Lake
     DELTA_PATH: str = os.getenv("DELTA_PATH", "./data/delta")
