@@ -1,225 +1,139 @@
-"""PySpark + Delta Lake service — local mode, CPU-only."""
+"""Delta Lake service — uses deltalake (delta-rs) for pure-Python Delta storage.
+No Java or Spark required.
+"""
 import os
 import logging
 import json
 import datetime
 import re
-from typing import Optional
+import pyarrow as pa
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Global SparkSession (lazy init)
-_spark = None
+DELTA_PATH = settings.DELTA_PATH or "./data/delta"
 
-def _get_spark():
-    """Get or create a SparkSession with Delta Lake support."""
-    global _spark
-    if _spark is not None:
-        return _spark
+
+def _clean_transcript(raw: str) -> str:
+    """Basic NLP-style cleaning of a transcript."""
+    text = raw.strip()
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\w\s.,!?;:\'\"-]', '', text)
+    return text
+
+
+def store_raw_transcript(meeting_id: int, transcript: str):
+    """Store raw transcript to the Delta Lake raw_transcripts table."""
+    table_path = os.path.join(DELTA_PATH, "raw_transcripts")
 
     try:
-        from pyspark.sql import SparkSession
+        from deltalake import write_deltalake, DeltaTable
 
-        _spark = (
-            SparkSession.builder
-            .appName("MeetingToAction")
-            .master("local[*]")
-            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-            .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.1")
-            .config("spark.driver.memory", "1g")
-            .config("spark.ui.enabled", "false")
-            .getOrCreate()
+        cleaned = _clean_transcript(transcript)
+
+        table = pa.table({
+            "meeting_id": pa.array([meeting_id], type=pa.int64()),
+            "raw_transcript": pa.array([transcript]),
+            "cleaned_transcript": pa.array([cleaned]),
+            "ingested_at": pa.array([datetime.datetime.now().isoformat()]),
+        })
+
+        write_deltalake(
+            table_path,
+            table,
+            mode="append",
         )
-        _spark.sparkContext.setLogLevel("WARN")
-        logger.info("SparkSession created successfully (local mode)")
+
+        logger.info(f"Delta Lake: raw transcript stored for meeting {meeting_id}")
+
     except Exception as e:
-        logger.error(f"Failed to create SparkSession: {e}")
-        _spark = None
-
-    return _spark
-
-def store_raw_transcript(meeting_id: int, transcript: str) -> bool:
-    """Write raw meeting transcript to Delta Lake (Raw Data layer)."""
-    spark = _get_spark()
-    if spark is None:
-        logger.warning("Spark unavailable — falling back to JSON storage for raw transcript")
-        return _fallback_json_store({"meeting_id": meeting_id, "type": "raw", "transcript": transcript})
-
-    try:
-        from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-        
-        schema = StructType([
-            StructField("meeting_id", IntegerType(), False),
-            StructField("raw_transcript", StringType(), True),
-            StructField("ingested_at", StringType(), True),
-        ])
-
-        row_data = [{
+        logger.error(f"Delta write failed: {e}")
+        logger.warning("Falling back to JSON storage for raw transcript")
+        _json_fallback(meeting_id, "raw", {
             "meeting_id": meeting_id,
             "raw_transcript": transcript,
-            "ingested_at": datetime.datetime.utcnow().isoformat(),
-        }]
+            "cleaned_transcript": _clean_transcript(transcript),
+            "ingested_at": datetime.datetime.now().isoformat(),
+        })
 
-        df = spark.createDataFrame(row_data, schema=schema)
-        delta_path = os.path.join(settings.DELTA_PATH, "raw_transcripts")
-        os.makedirs(delta_path, exist_ok=True)
-        df.write.format("delta").mode("append").save(delta_path)
 
-        logger.info(f"Raw transcript for meeting {meeting_id} stored to Delta Lake")
-        return True
-    except Exception as e:
-        logger.error(f"Delta Lake write error (Raw): {e}")
-        return False
-
-def clean_and_structure_transcript(meeting_id: int, transcript: str) -> str:
-    """Use Spark to clean the transcript before sending to AI Intelligence layer."""
-    spark = _get_spark()
-    if spark is None:
-        # Fallback basic cleaning
-        return re.sub(r'\s+', ' ', transcript).strip()
-    
-    try:
-        from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-        import pyspark.sql.functions as F
-
-        # Load into Spark dataframe
-        schema = StructType([StructField("id", IntegerType(), False), StructField("text", StringType(), True)])
-        df = spark.createDataFrame([{"id": meeting_id, "text": transcript}], schema=schema)
-
-        # Basic data cleaning transformations
-        df_cleaned = df.withColumn(
-            "cleaned_text", 
-            F.trim(F.regexp_replace(F.col("text"), r"\s+", " "))  # Normalize whitespaces
-        )
-
-        cleaned_text = df_cleaned.collect()[0]["cleaned_text"]
-        logger.info(f"Transcript cleaned for meeting {meeting_id}")
-        return cleaned_text
-    except Exception as e:
-        logger.error(f"Spark Data Cleaning error: {e}")
-        return re.sub(r'\s+', ' ', transcript).strip()
-
-def store_structured_data(meeting_data: dict) -> bool:
-    """
-    Write structured meeting analysis data to Delta Lake tables (Tasks/Decisions/Summaries layer).
-    """
-    spark = _get_spark()
-    if spark is None:
-        logger.warning("Spark unavailable — falling back to JSON storage")
-        return _fallback_json_store(meeting_data)
+def store_structured_data(meeting_id: int, analysis_result: dict):
+    """Store structured analysis results to the Delta Lake structured_results table."""
+    table_path = os.path.join(DELTA_PATH, "structured_results")
 
     try:
-        from pyspark.sql.types import (
-            StructType, StructField, StringType, IntegerType
+        from deltalake import write_deltalake
+
+        table = pa.table({
+            "meeting_id": pa.array([meeting_id], type=pa.int64()),
+            "summary": pa.array([analysis_result.get("summary", "")]),
+            "decisions": pa.array([json.dumps(analysis_result.get("decisions", []))]),
+            "action_items": pa.array([json.dumps(analysis_result.get("action_items", []))]),
+            "context": pa.array([json.dumps(analysis_result.get("context", {}))]),
+            "processed_at": pa.array([datetime.datetime.now().isoformat()]),
+        })
+
+        write_deltalake(
+            table_path,
+            table,
+            mode="append",
         )
 
-        schema = StructType([
-            StructField("meeting_id", IntegerType(), False),
-            StructField("title", StringType(), True),
-            StructField("summary", StringType(), True),
-            StructField("decisions", StringType(), True),
-            StructField("task_count", IntegerType(), True),
-            StructField("source_type", StringType(), True),
-            StructField("processed_at", StringType(), True),
-        ])
-
-        row_data = [{
-            "meeting_id": meeting_data.get("meeting_id"),
-            "title": meeting_data.get("title", ""),
-            "summary": meeting_data.get("summary", ""),
-            "decisions": json.dumps(meeting_data.get("decisions", [])),
-            "task_count": meeting_data.get("task_count", 0),
-            "source_type": meeting_data.get("source_type", "text"),
-            "processed_at": datetime.datetime.utcnow().isoformat(),
-        }]
-
-        df = spark.createDataFrame(row_data, schema=schema)
-
-        delta_path = os.path.join(settings.DELTA_PATH, "structured_meetings")
-        os.makedirs(delta_path, exist_ok=True)
-
-        df.write.format("delta").mode("append").save(delta_path)
-
-        logger.info(f"Structured data for meeting {meeting_data.get('meeting_id')} stored to Delta Lake")
-        return True
+        logger.info(f"Delta Lake: structured data stored for meeting {meeting_id}")
 
     except Exception as e:
-        logger.error(f"Delta Lake write error (Structured): {e}")
-        return _fallback_json_store(meeting_data)
+        logger.error(f"Delta write failed: {e}")
+        logger.warning("Falling back to JSON storage")
+        _json_fallback(meeting_id, "structured", {
+            "meeting_id": meeting_id,
+            **analysis_result,
+            "processed_at": datetime.datetime.now().isoformat(),
+        })
+
 
 def get_meeting_analytics() -> dict:
-    """Get analytics from Delta Lake — total meetings, tasks, etc."""
-    spark = _get_spark()
-    if spark is None:
-        return _fallback_json_analytics()
+    """Read analytics from Delta Lake."""
+    raw_path = os.path.join(DELTA_PATH, "raw_transcripts")
+    structured_path = os.path.join(DELTA_PATH, "structured_results")
+
+    analytics = {"total_raw": 0, "total_structured": 0, "latest_meetings": []}
 
     try:
-        delta_path = os.path.join(settings.DELTA_PATH, "structured_meetings")
-        if not os.path.exists(delta_path):
-            return {"total_meetings": 0, "total_tasks": 0, "recent": []}
+        from deltalake import DeltaTable
 
-        df = spark.read.format("delta").load(delta_path)
-        total_meetings = df.count()
-        total_tasks = df.agg({"task_count": "sum"}).collect()[0][0] or 0
+        if os.path.exists(raw_path) and DeltaTable.is_deltatable(raw_path):
+            dt = DeltaTable(raw_path)
+            analytics["total_raw"] = len(dt.to_pyarrow_table())
 
-        recent = (
-            df.orderBy(df.processed_at.desc())
-            .limit(5)
-            .select("meeting_id", "title", "task_count", "processed_at")
-            .collect()
-        )
+        if os.path.exists(structured_path) and DeltaTable.is_deltatable(structured_path):
+            dt = DeltaTable(structured_path)
+            tbl = dt.to_pyarrow_table()
+            analytics["total_structured"] = len(tbl)
 
-        return {
-            "total_meetings": total_meetings,
-            "total_tasks": int(total_tasks),
-            "recent": [row.asDict() for row in recent],
-        }
+            # Get latest 5
+            if len(tbl) > 0:
+                rows = tbl.to_pydict()
+                for i in range(min(5, len(rows["meeting_id"]))):
+                    analytics["latest_meetings"].append({
+                        "meeting_id": rows["meeting_id"][i],
+                        "summary": rows["summary"][i][:100] if rows["summary"][i] else "",
+                        "processed_at": rows["processed_at"][i],
+                    })
 
     except Exception as e:
-        logger.error(f"Delta Lake read error: {e}")
-        return {"total_meetings": 0, "total_tasks": 0, "recent": [], "error": str(e)}
+        logger.error(f"Delta analytics read failed: {e}")
 
-def _fallback_json_store(meeting_data: dict) -> bool:
-    """Fallback: store as JSON when Spark is unavailable."""
-    try:
-        json_dir = os.path.join(settings.DELTA_PATH, "json_fallback")
-        os.makedirs(json_dir, exist_ok=True)
-        # Use a unique name including type to avoid overwriting raw with structured
-        file_type = meeting_data.get("type", "structured")
-        file_path = os.path.join(json_dir, f"meeting_{meeting_data.get('meeting_id', 'unknown')}_{file_type}.json")
-        with open(file_path, "w") as f:
-            json.dump(meeting_data, f, indent=2, default=str)
-        logger.info(f"Fallback JSON stored: {file_path}")
-        return True
-    except Exception as e:
-        logger.error(f"JSON fallback store error: {e}")
-        return False
+    return analytics
 
-def _fallback_json_analytics() -> dict:
-    """Fallback analytics from JSON files."""
-    json_dir = os.path.join(settings.DELTA_PATH, "json_fallback")
-    if not os.path.exists(json_dir):
-        return {"total_meetings": 0, "total_tasks": 0, "recent": []}
 
-    files = [f for f in os.listdir(json_dir) if f.endswith("_structured.json")]
-    total_tasks = 0
-    recent = []
-    for f_name in sorted(files, reverse=True)[:5]:
-        with open(os.path.join(json_dir, f_name)) as f:
-            data = json.load(f)
-            total_tasks += data.get("task_count", 0)
-            recent.append({
-                "meeting_id": data.get("meeting_id"),
-                "title": data.get("title"),
-                "task_count": data.get("task_count", 0),
-                "processed_at": data.get("processed_at"),
-            })
+def _json_fallback(meeting_id: int, data_type: str, data: dict):
+    """Fallback: store as plain JSON when Delta Lake is unavailable."""
+    fallback_dir = os.path.join(DELTA_PATH, "json_fallback")
+    os.makedirs(fallback_dir, exist_ok=True)
 
-    return {
-        "total_meetings": len(files),
-        "total_tasks": total_tasks,
-        "recent": recent,
-    }
+    filepath = os.path.join(fallback_dir, f"meeting_{meeting_id}_{data_type}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"Fallback JSON stored: {filepath}")

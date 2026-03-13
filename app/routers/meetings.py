@@ -7,8 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
 
-from app.database import get_db
-from app.models import Meeting, MeetingAnalysis, Task
+from app.db.database import get_db
+from app.db.models import Meeting, MeetingAnalysis, Task
 from app.services.stt_service import transcribe_audio
 from app.services.board_service import create_task
 from app.services.spark_service import store_structured_data
@@ -112,7 +112,7 @@ async def submit_transcript(
 async def analyze_meeting(meeting_id: int, db: Session = Depends(get_db)):
     """Trigger AI analysis on a meeting transcript."""
     logger.info(f"Starting analysis for meeting_id: {meeting_id}")
-    from app.services.spark_service import store_raw_transcript, clean_and_structure_transcript, store_structured_data
+    from app.services.spark_service import store_raw_transcript, _clean_transcript, store_structured_data
     
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
     if not meeting:
@@ -133,7 +133,7 @@ async def analyze_meeting(meeting_id: int, db: Session = Depends(get_db)):
     # 2. Spark: Data Cleaning & Structuring
     cleaned_transcript = meeting.transcript
     try:
-        cleaned_transcript = clean_and_structure_transcript(meeting_id, meeting.transcript)
+        cleaned_transcript = _clean_transcript(meeting.transcript)
     except Exception as e:
         logger.warning(f"Failed to clean transcript via Spark: {e}")
 

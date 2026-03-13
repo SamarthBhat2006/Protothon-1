@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeetAction AI - Meeting Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            navy: '#0b0f1a',
+                            navyLight: '#141a2b',
+                            purple: '#6366f1',
+                            blue: '#2563eb',
+                            border: '#1e293b'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .nav-link {
+                @apply flex items-center gap-2 px-4 py-3 text-sm font-medium text-slate-400 hover:text-white border-b-2 border-transparent transition-all;
+            }
+            .nav-link.active {
+                @apply text-white border-brand-purple;
+            }
+            .input-card {
+                @apply bg-brand-navyLight border border-brand-border rounded-2xl p-8 flex flex-col h-full;
+            }
+            .pipeline-node {
+                @apply flex items-center gap-2 bg-[#1e293b]/50 px-4 py-2 rounded-lg border border-white/5 text-[11px] font-semibold text-slate-400 whitespace-nowrap;
+            }
+            .pipeline-node.active {
+                @apply border-indigo-500/50 bg-indigo-500/10 text-indigo-400;
+            }
+            .pipeline-node.completed {
+                @apply border-emerald-500/50 bg-emerald-500/10 text-emerald-400;
+            }
+        }
+        body {
+            background-color: #0b0f1a;
+            color: #f8fafc;
+        }
+    </style>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="selection:bg-indigo-500/30">
+    <!-- Header -->
+    <header class="bg-[#0b0f1a] border-b border-brand-border px-8 py-4 flex items-center justify-between sticky top-0 z-50">
+        <div class="flex items-center gap-4">
+            <div class="w-10 h-10 bg-brand-purple rounded-xl flex items-center justify-center text-white text-xl">⚡</div>
+            <div>
+                <h1 class="text-xl font-bold text-white leading-tight">MeetAction AI</h1>
+                <p class="text-[10px] text-slate-500 uppercase tracking-widest font-black">Meeting → Action Items → Board</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-6">
+            <div class="flex items-center gap-2 bg-[#1e293b]/50 px-3 py-1.5 rounded-full border border-white/5">
+                <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                <span class="text-[11px] font-bold text-slate-300">System Ready</span>
+            </div>
+            <a href="/docs" target="_blank" class="text-xs font-semibold text-slate-400 hover:text-white transition-colors flex items-center gap-1.5">
+                <span>&lt;/&gt;</span> API Docs
+            </a>
+        </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="border-b border-brand-border px-24 mt-8 flex gap-8">
+        <button class="nav-link active" data-tab="input">
+            <span class="text-lg">🎙️</span> Meeting Input
+        </button>
+        <button class="nav-link" data-tab="results">
+            <span class="text-lg">🌐</span> Analysis Results
+        </button>
+        <button class="nav-link" data-tab="board">
+            <span class="text-lg">📋</span> Kanban Board
+        </button>
+        <button class="nav-link" data-tab="meetings">
+            <span class="text-lg">📑</span> All Meetings
+        </button>
+    </nav>
+
+    <main class="px-24 py-12 pb-40">
+        <!-- Input Section -->
+        <div id="section-input" class="tab-content">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+                <!-- Voice Recording Card -->
+                <div class="input-card">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-10 h-10 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">🎙️</div>
+                        <div>
+                            <h2 class="text-lg font-bold text-white">Voice Recording</h2>
+                            <p class="text-xs text-slate-500">Upload audio → Sarvam AI STT</p>
+                        </div>
+                    </div>
+                    
+                    <div id="voice-drop-zone" class="flex-1 border-2 border-dashed border-brand-border rounded-xl mb-6 flex flex-col items-center justify-center p-12 group hover:border-brand-purple/50 hover:bg-white/5 transition-all cursor-pointer">
+                        <div class="text-4xl text-slate-600 mb-4 group-hover:scale-110 transition-transform">☁️</div>
+                        <p class="text-sm font-medium text-slate-300">Drag & drop audio file or <span class="text-brand-purple underline">browse</span></p>
+                        <p class="text-[11px] text-slate-500 mt-2">WAV, MP3, AAC, FLAC supported</p>
+                        <input type="file" id="voice-file-input" class="hidden" accept="audio/*">
+                    </div>
+
+                    <div class="flex gap-4">
+                        <input type="text" id="voice-meeting-title" class="flex-1 bg-brand-navy border border-brand-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-purple transition-colors" placeholder="Meeting title...">
+                        <button id="transcribe-btn" class="bg-brand-purple hover:bg-brand-purple/90 text-white font-bold px-6 py-3 rounded-xl flex items-center gap-2 transform active:scale-95 transition-all">
+                            <span>🚀</span> Transcribe
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Text Transcript Card -->
+                <div class="input-card">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-10 h-10 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">📄</div>
+                        <div>
+                            <h2 class="text-lg font-bold text-white">Text Transcript</h2>
+                            <p class="text-xs text-slate-500">Paste meeting notes directly</p>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col gap-4 flex-1">
+                        <input type="text" id="text-meeting-title" class="bg-brand-navy border border-brand-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-brand-purple transition-colors" placeholder="Meeting title...">
+                        <div class="flex-1 relative">
+                            <textarea id="text-transcript-input" class="w-full h-full min-h-[220px] bg-brand-navy border border-brand-border rounded-xl p-4 text-sm focus:outline-none focus:border-brand-purple transition-colors resize-none" placeholder="Paste your meeting transcript here...&#10;&#10;Example: We need to fix the login bug before the next release..."></textarea>
+                        </div>
+                        <button id="analyze-btn" class="w-full bg-brand-blue hover:bg-brand-blue/90 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transform active:scale-95 transition-all">
+                            <span>✈️</span> Submit & Analyze
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Placeholder Sections -->
+        <div id="section-results" class="tab-content hidden h-[400px] flex items-center justify-center text-slate-500 italic">
+            Meeting analysis details will appear here after processing...
+        </div>
+
+        <div id="section-board" class="tab-content hidden">
+            <!-- Kanban structure can be kept from previous version but with new styling -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8" id="kanban-container"></div>
+        </div>
+
+        <div id="section-meetings" class="tab-content hidden">
+            <div id="meetings-list" class="space-y-4"></div>
+        </div>
+    </main>
+
+    <!-- Pipeline Footer -->
+    <footer class="fixed bottom-0 left-0 right-0 bg-[#0b0f1a] border-t border-brand-border px-24 py-8 z-50">
+        <h3 class="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4">Processing Pipeline</h3>
+        <div class="flex items-center gap-4 overflow-x-auto pb-2 no-scrollbar">
+            <div id="pipe-input" class="pipeline-node active">
+                <span class="text-xs">🎙️</span> Input Capture
+            </div>
+            <span class="text-brand-border text-xs">❯</span>
+            <div id="pipe-stt" class="pipeline-node">
+                <span class="text-xs">🔊</span> Sarvam STT
+            </div>
+            <span class="text-brand-border text-xs">❯</span>
+            <div id="pipe-agent" class="pipeline-node">
+                <span class="text-xs">🌐</span> Google ADK Agent
+            </div>
+            <span class="text-brand-border text-xs">❯</span>
+            <div id="pipe-delta" class="pipeline-node">
+                <span class="text-xs">🗄️</span> Delta Lake
+            </div>
+            <span class="text-brand-border text-xs">❯</span>
+            <div id="pipe-board" class="pipeline-node">
+                <span class="text-xs">📋</span> Kanban Board
+            </div>
+        </div>
+    </footer>
+
+    <!-- Result Modal (Keeping for detail view) -->
+    <div id="modal-overlay" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] hidden items-center justify-center p-6">
+        <div class="bg-brand-navyLight border border-brand-border w-full max-w-2xl rounded-3xl p-10 relative max-h-[90vh] overflow-y-auto">
+            <button id="close-modal" class="absolute top-6 right-6 text-3xl font-light text-slate-500 hover:text-white">&times;</button>
+            <div id="modal-header" class="mb-8"></div>
+            <div id="modal-body" class="space-y-6"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
