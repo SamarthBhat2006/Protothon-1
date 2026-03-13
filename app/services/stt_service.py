@@ -97,6 +97,8 @@ async def _transcribe_standard(file_path: str, language_code: str) -> dict:
     except Exception as e:
         logger.error(f"Standard STT failed: {e}")
         return {"success": False, "error": str(e)}
+        
+    return {"success": False, "error": "Unknown error"}
 
 
 async def _transcribe_batch(file_path: str, language_code: str) -> dict:
@@ -175,6 +177,8 @@ async def _transcribe_batch(file_path: str, language_code: str) -> dict:
     except Exception as e:
         logger.error(f"Batch STT failed: {e}")
         return {"success": False, "error": str(e)}
+        
+    return {"success": False, "error": "Unknown error"}
 
 
 async def _mock_transcribe(file_path: str, language_code: str) -> dict:

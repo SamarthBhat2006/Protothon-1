@@ -5,6 +5,7 @@ import asyncio
 import random
 import re
 from typing import Optional, List, Dict, Any
+import aiohttp
 
 from app.config import settings
 
@@ -43,11 +44,9 @@ async def analyze_meeting_transcript(transcript: str) -> dict:
     """
     Orchestrates the Context, Decision, and Summary agents.
     """
-    if not settings.GOOGLE_API_KEY:
-        logger.warning("GOOGLE_API_KEY not set — using mock multi-agent analysis")
+    if not getattr(settings, "OPENROUTER_API_KEY", None):
+        logger.warning("OPENROUTER_API_KEY not set — using mock multi-agent analysis")
         return await _mock_analyze_multi(transcript)
-
-    os.environ["GOOGLE_API_KEY"] = settings.GOOGLE_API_KEY
 
     try:
         # Run a single powerful agent to avoid rate limits
@@ -82,66 +81,65 @@ async def analyze_meeting_transcript(transcript: str) -> dict:
 
 
 async def _run_agent(name: str, instruction: str, transcript: str) -> dict:
-    """Run Gemini 2.0 Flash via google-genai to analyze the transcript."""
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-
-    user_message = f"Analyze this meeting transcript:\n\n{transcript}"
+    """Run AI model via OpenRouter to analyze the transcript."""
+    api_key = getattr(settings, "OPENROUTER_API_KEY", None)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "google/gemini-2.0-flash-001",
+        "messages": [
+            {"role": "system", "content": instruction},
+            {"role": "user", "content": f"Analyze this meeting transcript:\n\n{transcript}"}
+        ],
+        "temperature": 0.3
+    }
+    
+    url = "https://openrouter.ai/api/v1/chat/completions"
 
     MAX_RETRIES = 3
     for attempt in range(MAX_RETRIES):
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=user_message,
-                config=types.GenerateContentConfig(
-                    system_instruction=instruction,
-                    temperature=0.3,
-                )
-            )
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload, timeout=60.0) as response:
+                    if response.status == 429:
+                        wait_time = 45.0 + (attempt * 15.0) + (random.random() * 5.0)
+                        logger.warning(f"Agent {name} hit rate limit (429). Waiting {wait_time:.2f}s before retry {attempt+1}/{MAX_RETRIES}...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Agent {name} failed with status {response.status}: {error_text}")
+                        if response.status in (403, 401):
+                            logger.error(f"Agent {name} failed due to Auth/Permissions. Falling back gracefully.")
+                            return _get_fallback_response_for_agent(name, error_type="403")
+                        return _get_fallback_response_for_agent(name, error_type=str(response.status))
+                    
+                    data = await response.json()
+                    response_text = data["choices"][0]["message"]["content"] or ""
 
-            response_text = response.text or ""
+                    if not response_text:
+                        logger.warning(f"Agent {name} returned NO text.")
+                    else:
+                        logger.info(f"Agent {name} response received ({len(response_text)} chars).")
 
-            if not response_text:
-                logger.warning(f"Agent {name} returned NO text.")
-            else:
-                logger.info(f"Agent {name} response received ({len(response_text)} chars).")
-
-            return _parse_agent_response(response_text)
+                    return _parse_agent_response(response_text)
 
         except Exception as e:
-            if "429" in str(e) and attempt < MAX_RETRIES - 1:
-                wait_time = 45.0
-                match = re.search(r"retry in ([\d\.]+)s", str(e))
-                if match:
-                    wait_time = float(match.group(1)) + 5.0
-                else:
-                    wait_time = 45.0 + (attempt * 15.0) + (random.random() * 5.0)
-
-                logger.warning(f"Agent {name} hit rate limit (429). Waiting {wait_time:.2f}s before retry {attempt+1}/{MAX_RETRIES}...")
-                await asyncio.sleep(wait_time)
-            else:
-                logger.error(f"Agent {name} failed: {e}")
-
-                if "429" in str(e) or "403" in str(e):
-                    logger.error(f"Agent {name} failed due to Gemini Quota/Permissions. Falling back gracefully.")
-                    return _get_fallback_response_for_agent(name, error_type="403" if "403" in str(e) else "429")
-
-                raise e
+            logger.error(f"Agent {name} execution error: {e}")
+            if attempt == MAX_RETRIES - 1:
+                return _get_fallback_response_for_agent(name)
+            await asyncio.sleep(5.0)
 
     return _get_fallback_response_for_agent(name)
 
 def _get_fallback_response_for_agent(name: str, error_type: str = "429") -> dict:
-    """Provide a safe fallback structure when Gemini API is completely exhausted or disabled."""
+    """Provide a safe fallback structure when OpenRouter API fails."""
     
-    status_text = "API Limit Hit" if error_type == "429" else "API Disabled"
-    summary_text = (
-        "The Gemini API Free Tier quota was exhausted during analysis. Please try again later or upgrade your API plan."
-        if error_type == "429" else
-        "The Generative Language API is disabled for this Google Cloud Project. Enable it at console.developers.google.com to see full AI analysis."
-    )
+    status_text = f"API Error ({error_type})"
+    summary_text = f"The OpenRouter API request failed with error {error_type}. Please check your API key and quota."
 
     return {
         "context": {
@@ -167,15 +165,15 @@ def _get_fallback_response_for_agent(name: str, error_type: str = "429") -> dict
 def _parse_agent_response(response_text: str) -> dict:
     """Parse the JSON response from an agent."""
     text = response_text.strip()
-    if text.startswith("```json"): text = text[7:]
-    if text.startswith("```"): text = text[3:]
-    if text.endswith("```"): text = text[:-3]
+    if text.startswith("```json"): text = text[7:] # type: ignore
+    if text.startswith("```"): text = text[3:] # type: ignore
+    if text.endswith("```"): text = text[:-3] # type: ignore
     text = text.strip()
 
     try:
         parsed = json.loads(text)
         if not parsed:
-            logger.warning(f"Parsed JSON is empty for text: {text[:100]}")
+            logger.warning(f"Parsed JSON is empty for text: {text[:100]}") # type: ignore
         return parsed
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse agent JSON: {e}")
@@ -213,7 +211,7 @@ async def _mock_analyze_multi(transcript: str) -> dict:
 
         if any(kw in sentence.lower() for kw in task_keywords):
             action_items.append({
-                "title": sentence[:80].strip("."),
+                "title": sentence[:80].strip("."), # type: ignore
                 "description": sentence,
                 "assignee": "John" if "John" in sentence else "Unassigned",
                 "priority": "high" if "bug" in sentence.lower() else "medium",
@@ -232,7 +230,7 @@ async def _mock_analyze_multi(transcript: str) -> dict:
             "title": "Review meeting transcript for tasks",
             "description": "The meeting transcript should be reviewed",
             "assignee": "Unassigned", "priority": "medium", 
-            "feature_area": "General", "context": transcript[:100]
+            "feature_area": "General", "context": transcript[:100] # type: ignore
         }],
         "mock": True,
     }

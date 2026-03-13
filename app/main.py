@@ -55,7 +55,7 @@ async def startup():
 
     # Status checks
     logger.info(f"Sarvam AI key: {'✓ configured' if settings.SARVAM_API_KEY else '✗ not set (mock mode)'}")
-    logger.info(f"Google API key: {'✓ configured' if settings.GOOGLE_API_KEY else '✗ not set (mock mode)'}")
+    logger.info(f"OpenRouter API key: {'✓ configured' if getattr(settings, 'OPENROUTER_API_KEY', '') else '✗ not set (mock mode)'}")
     logger.info("Server ready at http://localhost:8000")
     logger.info("=" * 60)
 
@@ -88,5 +88,5 @@ async def health():
         "status": "healthy",
         "version": settings.VERSION,
         "sarvam_configured": bool(settings.SARVAM_API_KEY),
-        "google_configured": bool(settings.GOOGLE_API_KEY),
+        "openrouter_configured": bool(getattr(settings, 'OPENROUTER_API_KEY', '')),
     }

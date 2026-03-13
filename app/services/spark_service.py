@@ -7,6 +7,7 @@ import json
 import datetime
 import re
 import pyarrow as pa
+from typing import Any
 
 from app.config import settings
 
@@ -97,7 +98,7 @@ def get_meeting_analytics() -> dict:
     raw_path = os.path.join(DELTA_PATH, "raw_transcripts")
     structured_path = os.path.join(DELTA_PATH, "structured_results")
 
-    analytics = {"total_raw": 0, "total_structured": 0, "latest_meetings": []}
+    analytics: dict[str, Any] = {"total_raw": 0, "total_structured": 0, "latest_meetings": []}
 
     try:
         from deltalake import DeltaTable
