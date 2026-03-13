@@ -82,70 +82,53 @@ async def analyze_meeting_transcript(transcript: str) -> dict:
 
 
 async def _run_agent(name: str, instruction: str, transcript: str) -> dict:
-    """Run a single specialized Google ADK Agent."""
-    from google.adk.agents import Agent
-    from google.adk.runners import InMemoryRunner
-    from google.adk.sessions import InMemorySessionService
+    """Run Gemini 2.0 Flash via google-genai to analyze the transcript."""
+    from google import genai
     from google.genai import types
 
-    agent = Agent(
-        name=name,
-        model="gemini-2.0-flash",
-        description=f"Specialized {name.replace('_', ' ')}",
-        instruction=instruction,
-    )
+    client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
-    runner = InMemoryRunner(agent=agent, app_name="meeting_to_action")
-    session = await runner.session_service.create_session(app_name="meeting_to_action", user_id=f"system_{name}")
-
-    user_message = types.Content(
-        role="user",
-        parts=[types.Part(text=f"Analyze this meeting transcript:\n\n{transcript}")]
-    )
+    user_message = f"Analyze this meeting transcript:\n\n{transcript}"
 
     MAX_RETRIES = 3
     for attempt in range(MAX_RETRIES):
         try:
-            response_text = ""
-            async for event in runner.run_async(
-                user_id=f"system_{name}",
-                session_id=session.id,
-                new_message=user_message,
-            ):
-                if event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if part.text:
-                            response_text += part.text
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=user_message,
+                config=types.GenerateContentConfig(
+                    system_instruction=instruction,
+                    temperature=0.3,
+                )
+            )
+
+            response_text = response.text or ""
 
             if not response_text:
                 logger.warning(f"Agent {name} returned NO text.")
             else:
                 logger.info(f"Agent {name} response received ({len(response_text)} chars).")
-            
+
             return _parse_agent_response(response_text)
 
         except Exception as e:
             if "429" in str(e) and attempt < MAX_RETRIES - 1:
-                # Try to extract "retry in Xs" from the error message
-                wait_time = 45.0 # Default if not found (Gemini usually needs ~45s for minute quota)
+                wait_time = 45.0
                 match = re.search(r"retry in ([\d\.]+)s", str(e))
                 if match:
-                    wait_time = float(match.group(1)) + 5.0 # Add a larger 5-second buffer
+                    wait_time = float(match.group(1)) + 5.0
                 else:
-                    # Exponential backoff base 60 is too long, let's use a 45s base with jitter
                     wait_time = 45.0 + (attempt * 15.0) + (random.random() * 5.0)
-                
+
                 logger.warning(f"Agent {name} hit rate limit (429). Waiting {wait_time:.2f}s before retry {attempt+1}/{MAX_RETRIES}...")
                 await asyncio.sleep(wait_time)
             else:
                 logger.error(f"Agent {name} failed: {e}")
-                
-                # Graceful degradation if we completely exhaust retries on 429
-                # or if the API is completely disabled (403)
+
                 if "429" in str(e) or "403" in str(e):
-                    logger.error(f"Agent {name} failed due to Gemini Quota/Permissions ({'403' if '403' in str(e) else '429'}). Falling back gracefully.")
+                    logger.error(f"Agent {name} failed due to Gemini Quota/Permissions. Falling back gracefully.")
                     return _get_fallback_response_for_agent(name, error_type="403" if "403" in str(e) else "429")
-                
+
                 raise e
 
     return _get_fallback_response_for_agent(name)
