@@ -2,6 +2,8 @@
 import os
 import logging
 import shutil
+import json
+import traceback
 from typing import Optional
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -111,123 +113,113 @@ async def submit_transcript(
 @router.post("/{meeting_id}/analyze")
 async def analyze_meeting(meeting_id: int, db: Session = Depends(get_db)):
     """Trigger AI analysis on a meeting transcript."""
-    logger.info(f"Starting analysis for meeting_id: {meeting_id}")
-    from app.services.spark_service import store_raw_transcript, _clean_transcript, store_structured_data
-    
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-
-    if not meeting.transcript:
-        raise HTTPException(status_code=400, detail="Meeting has no transcript to analyze")
-
-    meeting.status = "analyzing"
-    db.commit()
-
-    # 1. Delta Lake: Store Raw Data
     try:
-        store_raw_transcript(meeting_id, meeting.transcript)
-    except Exception as e:
-        logger.warning(f"Failed to store raw transcript to Delta Lake: {e}")
+        logger.info(f"Starting analysis for meeting_id: {meeting_id}")
+        from app.services.spark_service import store_raw_transcript, _clean_transcript, store_structured_data
+        
+        meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
+        if not meeting:
+            raise HTTPException(status_code=404, detail="Meeting not found")
 
-    # 2. Spark: Data Cleaning & Structuring
-    cleaned_transcript = meeting.transcript
-    try:
-        cleaned_transcript = _clean_transcript(meeting.transcript)
-    except Exception as e:
-        logger.warning(f"Failed to clean transcript via Spark: {e}")
+        if not meeting.transcript:
+            raise HTTPException(status_code=400, detail="Meeting has no transcript to analyze")
 
-    # 3. AI Intelligence Layer (Multi-Agent)
-    logger.info(f"Running multi-agent analysis for meeting {meeting_id}...")
-    try:
-        result = await analyze_meeting_transcript(cleaned_transcript)
-        logger.info(f"Multi-agent analysis complete for meeting {meeting_id}")
-    except Exception as e:
-        meeting.status = "failed"
+        meeting.status = "analyzing"
         db.commit()
-        logger.error(f"Analysis failed for meeting {meeting_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-    # 4. Output & Workflow Layer (SQLite + Tasks)
-    analysis = db.query(MeetingAnalysis).filter(MeetingAnalysis.meeting_id == meeting_id).first()
-    if analysis:
-        analysis.summary = result.get("summary", "")
-        analysis.decisions = result.get("decisions", [])
-        analysis.raw_response = str(result)
-    else:
-        analysis = MeetingAnalysis(
-            meeting_id=meeting_id,
-            summary=result.get("summary", ""),
-            decisions=result.get("decisions", []),
-            raw_response=str(result),
-        )
-        db.add(analysis)
+        # 1. Delta Lake: Store Raw Data
+        try:
+            store_raw_transcript(meeting_id, meeting.transcript)
+        except Exception as e:
+            logger.warning(f"Failed to store raw transcript to Delta Lake: {e}")
 
-    # Create tasks from action items
-    action_items = result.get("action_items", [])
-    created_tasks = []
-    for item in action_items:
-        task = create_task(db, {
-            "meeting_id": meeting_id,
-            "title": item.get("title", "Untitled Task"),
-            "description": item.get("description", ""),
-            "assignee": item.get("assignee"),
-            "priority": item.get("priority", "medium"),
-            "context": item.get("context", ""),
-            "feature_area": item.get("feature_area", ""),
-        })
-        created_tasks.append(task)
+        # 2. Spark: Data Cleaning & Structuring
+        cleaned_transcript = meeting.transcript
+        try:
+            cleaned_transcript = _clean_transcript(meeting.transcript)
+        except Exception as e:
+            logger.warning(f"Failed to clean transcript via Spark: {e}")
 
-    meeting.status = "analyzed"
-    db.commit()
-    db.refresh(meeting)
+        # 3. AI Intelligence Layer (Multi-Agent)
+        logger.info(f"Running multi-agent analysis for meeting {meeting_id}...")
+        try:
+            result = await analyze_meeting_transcript(cleaned_transcript)
+            logger.info(f"Multi-agent analysis complete for meeting {meeting_id}")
+        except Exception as e:
+            meeting.status = "failed"
+            db.commit()
+            logger.error(f"Analysis failed for meeting {meeting_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-    # 5. Output Layer (Delta Tables generation)
-    try:
-        store_structured_data({
+        # 4. Output & Workflow Layer (SQLite + Tasks)
+        summary_data = result.get("summary", "")
+        if isinstance(summary_data, list):
+            summary_data = "\n".join(str(s) for s in summary_data)
+        
+        analysis = db.query(MeetingAnalysis).filter(MeetingAnalysis.meeting_id == meeting_id).first()
+        if analysis:
+            analysis.summary = str(summary_data)
+            analysis.decisions = json.dumps(result.get("decisions", []))
+            analysis.raw_response = str(result)
+        else:
+            analysis = MeetingAnalysis(
+                meeting_id=meeting_id,
+                summary=str(summary_data),
+                decisions=json.dumps(result.get("decisions", [])),
+                raw_response=str(result),
+            )
+            db.add(analysis)
+
+        # Create tasks from action items
+        action_items = result.get("action_items", [])
+        created_tasks = []
+        for item in action_items:
+            task = create_task(db, {
+                "meeting_id": meeting_id,
+                "title": item.get("title", "Untitled Task"),
+                "description": item.get("description", ""),
+                "assignee": item.get("assignee"),
+                "priority": item.get("priority", "medium"),
+                "context": item.get("context", ""),
+                "feature_area": item.get("feature_area", ""),
+            })
+            created_tasks.append(task)
+
+        meeting.status = "analyzed"
+        db.commit()
+        db.refresh(meeting)
+
+        # 5. Output Layer (Delta Tables generation)
+        try:
+            store_structured_data(meeting.id, result)
+        except Exception as e:
+            logger.warning(f"Delta Lake structured store failed (non-critical): {e}")
+
+        return {
             "meeting_id": meeting.id,
-            "title": meeting.title,
-            "transcript": meeting.transcript,
+            "status": "analyzed",
             "summary": result.get("summary", ""),
             "decisions": result.get("decisions", []),
+            "action_items_count": len(created_tasks),
             "tasks": [
                 {
                     "id": t.id,
                     "title": t.title,
-                    "description": t.description,
                     "assignee": t.assignee,
                     "priority": t.priority,
                     "status": t.status,
-                    "context": t.context,
                     "feature_area": t.feature_area,
                 }
                 for t in created_tasks
             ],
-            "task_count": len(created_tasks),
-            "source_type": meeting.source_type,
-        })
+            "mock": result.get("mock", False),
+        }
     except Exception as e:
-        logger.warning(f"Delta Lake structured store failed (non-critical): {e}")
-
-    return {
-        "meeting_id": meeting.id,
-        "status": "analyzed",
-        "summary": result.get("summary", ""),
-        "decisions": result.get("decisions", []),
-        "action_items_count": len(created_tasks),
-        "tasks": [
-            {
-                "id": t.id,
-                "title": t.title,
-                "assignee": t.assignee,
-                "priority": t.priority,
-                "status": t.status,
-                "feature_area": t.feature_area,
-            }
-            for t in created_tasks
-        ],
-        "mock": result.get("mock", False),
-    }
+        logger.error(f"CRITICAL ERROR in analyze_meeting: {e}")
+        traceback.print_exc()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{meeting_id}/results")
@@ -251,7 +243,7 @@ async def get_meeting_results(meeting_id: int, db: Session = Depends(get_db)):
         },
         "analysis": {
             "summary": analysis.summary if analysis else None,
-            "decisions": analysis.decisions if analysis else [],
+            "decisions": json.loads(analysis.decisions) if analysis and isinstance(analysis.decisions, str) else (analysis.decisions if analysis else []),
         } if analysis else None,
         "tasks": [
             {
