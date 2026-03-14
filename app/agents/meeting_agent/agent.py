@@ -83,9 +83,12 @@ async def analyze_meeting_transcript(transcript: str) -> dict:
 async def _run_agent(name: str, instruction: str, transcript: str) -> dict:
     """Run AI model via OpenRouter to analyze the transcript."""
     api_key = getattr(settings, "OPENROUTER_API_KEY", None)
+    api_key = str(api_key).strip() if api_key else None
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:8000",
+        "X-Title": "AI Meeting Analyzer"
     }
     payload = {
         "model": "google/gemini-2.0-flash-001",
@@ -113,8 +116,8 @@ async def _run_agent(name: str, instruction: str, transcript: str) -> dict:
                         error_text = await response.text()
                         logger.error(f"Agent {name} failed with status {response.status}: {error_text}")
                         if response.status in (403, 401):
-                            logger.error(f"Agent {name} failed due to Auth/Permissions. Falling back gracefully.")
-                            return _get_fallback_response_for_agent(name, error_type="403")
+                            logger.error(f"Agent {name} failed due to Auth/Permissions/Credits. Falling back gracefully.")
+                            return _get_fallback_response_for_agent(name, error_type=str(response.status), error_detail=error_text)
                         return _get_fallback_response_for_agent(name, error_type=str(response.status))
                     
                     data = await response.json()
@@ -135,11 +138,18 @@ async def _run_agent(name: str, instruction: str, transcript: str) -> dict:
 
     return _get_fallback_response_for_agent(name)
 
-def _get_fallback_response_for_agent(name: str, error_type: str = "429") -> dict:
+def _get_fallback_response_for_agent(name: str, error_type: str = "429", error_detail: str = "") -> dict:
     """Provide a safe fallback structure when OpenRouter API fails."""
     
     status_text = f"API Error ({error_type})"
-    summary_text = f"The OpenRouter API request failed with error {error_type}. Please check your API key and quota."
+    
+    if error_type in ("401", "403"):
+        summary_text = f"OpenRouter Authentication Failure ({error_type}). Ensure your API key is correct and your account has credits/quota."
+        if "credits" in error_detail.lower():
+            summary_text = "OpenRouter error: Insufficient credits. Please top up your account at openrouter.ai."
+    else:
+        detail_snippet = error_detail[:100] if error_detail else ""
+        summary_text = f"The OpenRouter API request failed with error {error_type}. Detail: {detail_snippet}"
 
     return {
         "context": {

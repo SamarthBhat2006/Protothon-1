@@ -27,7 +27,7 @@ class MeetingAnalysis(Base):
     id = Column(Integer, primary_key=True, index=True)
     meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False, unique=True)
     summary = Column(Text, nullable=True)
-    decisions = Column(JSON, nullable=True)  # list of decision strings
+    decisions = Column(Text, nullable=True)  # Store as JSON string for SQLite reliability
     raw_response = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
